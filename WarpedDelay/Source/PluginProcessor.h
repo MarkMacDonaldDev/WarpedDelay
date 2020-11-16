@@ -55,5 +55,15 @@ public:
 
 private:
     //==============================================================================
+    juce::AudioBuffer<float> m_DelayBuffer;
+    int m_nBufferWritePosition = 0;
+    bool m_bReverseStateToggle = false;
+
+    //==============================================================================
+    void FillDelayBuffer(int nChannel, const int nBufferLength, const int nDelayBufferLength, const float* pBufferData);
+    void GetDelayBuffer(juce::AudioBuffer<float>& rBuffer, int nChannel, const int nBufferLength, const int nDelayBufferLength, const float* pDelayBufferData);
+    void FeedbackIntoDelayBuffer(int nChannel, const int nBufferLength, const int nDelayBufferLength, const float* pDryBuffer);
+
+    //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WarpedDelayAudioProcessor)
 };

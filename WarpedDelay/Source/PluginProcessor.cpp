@@ -10,6 +10,16 @@
 #include "PluginEditor.h"
 
 //==============================================================================
+
+const int g_nSampleRate = 44100;        //samples per second
+const int g_nDelayTime = 300;           //in milliseconds
+const int g_nSecondsToMilliseconds = 1000;
+const float g_fPI = 3.14159;
+const float g_fDistortionBlend = 0.1f;
+const float g_fStartGainDefault = 0.8f;
+const float g_fEndGainDefault = 0.8f;
+
+//==============================================================================
 WarpedDelayAudioProcessor::WarpedDelayAudioProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
      : AudioProcessor (BusesProperties()
@@ -93,8 +103,10 @@ void WarpedDelayAudioProcessor::changeProgramName (int index, const juce::String
 //==============================================================================
 void WarpedDelayAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    // Use this method as the place to do any pre-playback
-    // initialisation that you need..
+    const int numInputChannels = getTotalNumInputChannels();
+    const int delayBufferSize = 2 * (sampleRate * samplesPerBlock);
+
+    m_DelayBuffer.setSize(numInputChannels, delayBufferSize);
 }
 
 void WarpedDelayAudioProcessor::releaseResources()
@@ -129,30 +141,76 @@ bool WarpedDelayAudioProcessor::isBusesLayoutSupported (const BusesLayout& layou
 
 void WarpedDelayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
-    juce::ScopedNoDenormals noDenormals;
-    auto totalNumInputChannels  = getTotalNumInputChannels();
+    auto totalNumInputChannels = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-        buffer.clear (i, 0, buffer.getNumSamples());
+    {
+        buffer.clear(i, 0, buffer.getNumSamples());
+    }
 
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
+    const int nBufferLength = buffer.getNumSamples();
+    const int nDelayBufferLength = m_DelayBuffer.getNumSamples();
+
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
     {
-        auto* channelData = buffer.getWritePointer (channel);
+        const float* pBufferData = buffer.getReadPointer(channel);
+        float* pDryBuffer = buffer.getWritePointer(channel);
+        const float* pDelayBufferData = m_DelayBuffer.getReadPointer(channel);
 
-        // ..do something to the data...
+        FillDelayBuffer(channel, nBufferLength, nDelayBufferLength, pBufferData);
+        GetDelayBuffer(buffer, channel, nBufferLength, nDelayBufferLength, pDelayBufferData);
+        FeedbackIntoDelayBuffer(channel, nBufferLength, nDelayBufferLength, pDryBuffer);
+    }
+
+    m_nBufferWritePosition += nBufferLength;
+    m_nBufferWritePosition %= nDelayBufferLength;
+}
+
+//==============================================================================
+void WarpedDelayAudioProcessor::FillDelayBuffer(int nChannel, const int nBufferLength, const int nDelayBufferLength, const float* pBufferData)
+{
+    if (nDelayBufferLength > (nBufferLength + m_nBufferWritePosition))
+    {
+        m_DelayBuffer.copyFromWithRamp(nChannel, m_nBufferWritePosition, pBufferData, nBufferLength, g_fStartGainDefault, g_fEndGainDefault);
+    }
+    else
+    {
+        const int nBufferRemaining = nDelayBufferLength - m_nBufferWritePosition;
+        m_DelayBuffer.copyFromWithRamp(nChannel, m_nBufferWritePosition, pBufferData, nBufferRemaining, g_fStartGainDefault, g_fEndGainDefault);
+        m_DelayBuffer.copyFromWithRamp(nChannel, 0, pBufferData, nBufferLength - nBufferRemaining, g_fStartGainDefault, g_fEndGainDefault);
+    }
+}
+
+//==============================================================================
+void WarpedDelayAudioProcessor::GetDelayBuffer(juce::AudioBuffer<float>& rBuffer, int nChannel, const int nBufferLength, const int nDelayBufferLength, const float* pDelayBufferData)
+{
+    const int nReadPosition = static_cast<int>(nDelayBufferLength + m_nBufferWritePosition - (g_nSampleRate * g_nDelayTime / g_nSecondsToMilliseconds)) % nDelayBufferLength;
+
+    if (nDelayBufferLength > nBufferLength + nReadPosition)
+    {
+        rBuffer.copyFrom(nChannel, 0, pDelayBufferData + nReadPosition, nBufferLength);
+    }
+    else
+    {
+        const int bufferRemaining = nDelayBufferLength - nReadPosition;
+        rBuffer.copyFrom(nChannel, 0, pDelayBufferData + nReadPosition, bufferRemaining);
+        rBuffer.copyFrom(nChannel, bufferRemaining, pDelayBufferData, nBufferLength - bufferRemaining);
+    }
+}
+
+//==============================================================================
+void WarpedDelayAudioProcessor::FeedbackIntoDelayBuffer(int nChannel, const int nBufferLength, const int nDelayBufferLength, const float* pDryBuffer)
+{
+    if (nDelayBufferLength > (nBufferLength + m_nBufferWritePosition))
+    {
+        m_DelayBuffer.addFromWithRamp(nChannel, m_nBufferWritePosition, pDryBuffer, nBufferLength, g_fStartGainDefault, g_fEndGainDefault);
+    }
+    else
+    {
+        const int remainingBuffer = nDelayBufferLength - m_nBufferWritePosition;
+        m_DelayBuffer.addFromWithRamp(nChannel, remainingBuffer, pDryBuffer, remainingBuffer, g_fStartGainDefault, g_fEndGainDefault);
+        m_DelayBuffer.addFromWithRamp(nChannel, 0, pDryBuffer, (nBufferLength - remainingBuffer), g_fStartGainDefault, g_fEndGainDefault);
     }
 }
 
